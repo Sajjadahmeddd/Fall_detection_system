@@ -11,52 +11,112 @@ from datetime import datetime
 root = tk.Tk()
 root.withdraw()
 
-# Open file dialog to select video
-print("Please select a video file...")
-video_path = filedialog.askopenfilename(
-    title="Select a video file for fall detection",
-    filetypes=[
-        ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm"),
-        ("MP4 files", "*.mp4"),
-        ("AVI files", "*.avi"),
-        ("All files", "*.*")
-    ]
-)
+# Ask user to choose between file or RTSP stream
+choice = input("Choose input source:\n1. Video file\n2. RTSP Camera Stream\nEnter choice (1 or 2): ").strip()
 
-# Check if a file was selected
-if not video_path:
-    print("No video file selected. Exiting...")
+if choice == '1':
+    # Open file dialog to select video
+    print("Please select a video file...")
+    video_path = filedialog.askopenfilename(
+        title="Select a video file for fall detection",
+        filetypes=[
+            ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm"),
+            ("MP4 files", "*.mp4"),
+            ("AVI files", "*.avi"),
+            ("All files", "*.*")
+        ]
+    )
+    
+    # Check if a file was selected
+    if not video_path:
+        print("No video file selected. Exiting...")
+        exit()
+    
+    print(f"Selected video: {video_path}")
+    is_rtsp_stream = False
+
+elif choice == '2':
+    # Get RTSP URL from user
+    print("\nRTSP Stream Configuration:")
+    print("Example formats:")
+    print("  rtsp://username:password@ip:port/stream")
+    print("  rtsp://192.168.1.100:554/stream1")
+    print("  rtsp://admin:password123@192.168.1.50:554/live/main")
+    print("  Your working URL: rtsp://admin:AK@MrA!4501$uf@192.168.0.109:554/cam/realmonitor?channel=8&subtype=0")
+    
+    video_path = input("\nEnter your RTSP URL: ").strip()
+    
+    if not video_path:
+        print("No RTSP URL provided. Exiting...")
+        exit()
+    
+    print(f"Connecting to RTSP stream: {video_path}")
+    is_rtsp_stream = True
+
+else:
+    print("Invalid choice. Exiting...")
     exit()
-
-print(f"Selected video: {video_path}")
 
 cap = cv2.VideoCapture(video_path)
 
-# Check if video opened successfully
+# Configure RTSP stream settings for better reliability
+if is_rtsp_stream:
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size for lower latency
+    cap.set(cv2.CAP_PROP_FPS, 25)  # Set FPS for RTSP
+    print("Connecting to RTSP stream... This may take a few seconds...")
+
+# Check if video/stream opened successfully
 if not cap.isOpened():
-    print(f"Error: Could not open video file '{video_path}'")
-    print("Please make sure the file exists and is a valid video format.")
+    if is_rtsp_stream:
+        print(f"Error: Could not connect to RTSP stream '{video_path}'")
+        print("Please check:")
+        print("- Network connection")
+        print("- RTSP URL format")
+        print("- Camera credentials (username/password)")
+        print("- Camera IP and port")
+        print("- Firewall settings")
+    else:
+        print(f"Error: Could not open video file '{video_path}'")
+        print("Please make sure the file exists and is a valid video format.")
     exit()
 
 # Get video properties for output
-fps = int(cap.get(cv2.CAP_PROP_FPS))
+fps = int(cap.get(cv2.CAP_PROP_FPS)) if not is_rtsp_stream else 25  # Default 25 FPS for RTSP
 width = 980  # Using the resized width
 height = 740  # Using the resized height
 
-# Create output filename with timestamp
-current_folder = os.path.dirname(os.path.abspath(__file__))
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-input_name = os.path.splitext(os.path.basename(video_path))[0]
-output_filename = f"fall_detection_{input_name}_{timestamp}.mp4"
-output_path = os.path.join(current_folder, output_filename)
+# Video writer setup
+out = None
+if not is_rtsp_stream:
+    # Only save video files, not live streams
+    current_folder = os.path.dirname(os.path.abspath(__file__))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    input_name = os.path.splitext(os.path.basename(video_path))[0]
+    output_filename = f"fall_detection_{input_name}_{timestamp}.mp4"
+    output_path = os.path.join(current_folder, output_filename)
+    
+    # Define codec and create VideoWriter
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    print(f"Processed video will be saved as: {output_filename}")
+else:
+    # For RTSP streams, ask if user wants to record
+    record_choice = input("Do you want to record the RTSP stream? (y/n): ").strip().lower()
+    if record_choice == 'y':
+        current_folder = os.path.dirname(os.path.abspath(__file__))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"fall_detection_rtsp_stream_{timestamp}.mp4"
+        output_path = os.path.join(current_folder, output_filename)
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        print(f"Recording RTSP stream to: {output_filename}")
 
-# Define codec and create VideoWriter
-fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-print("Video loaded successfully! Starting fall detection...")
-print(f"Processed video will be saved as: {output_filename}")
-print("Press 't' to stop the video")
+print("Connection established! Starting fall detection...")
+if is_rtsp_stream:
+    print("Live RTSP stream - Press 't' to stop")
+else:
+    print("Press 't' to stop the video")
 
 model = YOLO('yolov8s.pt')
 
@@ -164,8 +224,9 @@ while True:
                           f"Pos%: {relative_height:.2f}, Wide: {is_wide}, Low: {is_low_in_frame}, "
                           f"Short: {is_short_box}, VeryLow: {is_very_low}, Thin: {is_very_thin}")
 
-    # Write the frame to output video
-    out.write(frame)
+    # Write the frame to output video (if recording is enabled)
+    if out is not None:
+        out.write(frame)
 
     cv2.imshow('frame', frame)
     if cv2.waitKey(1) & 0xFF == ord('t'):
@@ -174,16 +235,25 @@ while True:
 
 # Clean up
 cap.release()
-out.release()
+if out is not None:
+    out.release()
 cv2.destroyAllWindows()
 
 print(f"\nProcessing completed!")
-print(f"Processed video saved as: {output_filename}")
-print(f"Full path: {output_path}")
 
-# Check if file was created successfully
-if os.path.exists(output_path):
-    file_size = os.path.getsize(output_path) / (1024 * 1024)  # Size in MB
-    print(f"File size: {file_size:.2f} MB")
+# Show save information only if video was recorded
+if out is not None:
+    print(f"Processed video saved as: {output_filename}")
+    print(f"Full path: {output_path}")
+    
+    # Check if file was created successfully
+    if os.path.exists(output_path):
+        file_size = os.path.getsize(output_path) / (1024 * 1024)  # Size in MB
+        print(f"File size: {file_size:.2f} MB")
+    else:
+        print("Warning: Output file was not created successfully")
 else:
-    print("Warning: Output file was not created successfully")
+    if is_rtsp_stream:
+        print("RTSP stream monitoring completed (no recording)")
+    else:
+        print("Video processing completed")
