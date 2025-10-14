@@ -156,48 +156,75 @@ while True:
             # Calculate aspect ratio (width/height)
             aspect_ratio = width / height if height > 0 else 0
             
-            # Fall detection logic: if width is significantly greater than height
-            # A person lying down typically has aspect ratio > 0.8-1.2
-            fall_threshold = 0.9  # Lowered threshold to catch more horizontal positions
-            
             if conf > 80 and class_detect == 'person':
                 cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6)
                 cvzone.putTextRect(frame, f'{class_detect}', [x1 + 8, y1 - 12], thickness=2, scale=2)
-                
-                # Debug: Print info for each detected person
-                print(f"Person detected - Conf: {conf}%, Size: {width}x{height}, Ratio: {aspect_ratio:.2f}, Position: ({x1},{y1})-({x2},{y2})")
                 
                 # Enhanced multi-factor fall detection logic
                 frame_height = frame.shape[0]
                 frame_width = frame.shape[1]
                 
-                # Factor 1: Aspect ratio (width/height)
-                is_wide = aspect_ratio > 0.9
-                
-                # Factor 2: Position in frame (lower = more likely lying)
+                # Calculate key metrics
                 vertical_position = (y1 + y2) / 2  # Center Y of person
-                relative_height = vertical_position / frame_height
-                is_low_in_frame = relative_height > 0.5  # Lower half of frame
+                relative_height = vertical_position / frame_height  # Vertical position (0=top, 1=bottom)
+                height_ratio = height / frame_height  # Person height relative to frame
+                width_ratio = width / frame_width  # Person width relative to frame
                 
-                # Factor 3: Bounding box height relative to frame (small height = lying)
-                height_ratio = height / frame_height
-                is_short_box = height_ratio < 0.4  # Person box is less than 40% of frame height
+                # Key metric: Distance from bottom (how close person is to ground)
+                distance_from_bottom = frame_height - y2
+                distance_ratio = distance_from_bottom / frame_height
                 
-                # Factor 4: Person's bottom edge (very low = on ground/furniture)
-                is_very_low = y2 > (frame_height * 0.7)  # Bottom 30% of frame
+                # Debug: Print info for each detected person
+                print(f"\nPerson detected - Conf: {conf}%")
+                print(f"  Size: {width}x{height} | Aspect Ratio: {aspect_ratio:.2f}")
+                print(f"  Position: ({x1},{y1})-({x2},{y2})")
+                print(f"  Height%: {height_ratio:.2f} | Width%: {width_ratio:.2f}")
+                print(f"  Vertical Pos%: {relative_height:.2f} | Dist from bottom: {distance_from_bottom}px ({distance_ratio:.2f})")
                 
-                # Factor 5: Extremely thin detection (camera angle effect on lying person)
-                is_very_thin = aspect_ratio < 0.3 and height_ratio < 0.35
+                # IMPROVED FALL DETECTION LOGIC - Optimized for overhead/angled camera
+                # Camera mounted at top corner looking down
+                # Key insight: A fallen person will have:
+                # 1. Wide aspect ratio (width > height)
+                # 2. Small height (short bounding box) - appears compressed/flat
+                # 3. Position is less important with overhead camera
                 
-                # Multi-condition fall detection
-                fall_conditions = [
-                    is_wide,  # Classic wide aspect ratio
-                    (is_low_in_frame and is_short_box),  # Low position + short box
-                    (is_very_low and aspect_ratio > 0.6),  # Very low + somewhat wide
-                    is_very_thin  # Very thin box (lying person from certain angles)
-                ]
+                # Calculate bounding box area (larger area = more of person visible when lying)
+                bbox_area = width * height
+                frame_area = frame_width * frame_height
+                area_ratio = bbox_area / frame_area
                 
-                is_fallen = any(fall_conditions)
+                # Factor 1: Wide aspect ratio + Small height (classic lying down)
+                # Must have BOTH wide ratio AND small height to avoid stretched arms false positive
+                is_lying_wide = (aspect_ratio > 1.2) and (height_ratio < 0.35)
+                
+                # Factor 2: Very short box (compressed/flat appearance from overhead)
+                # Regardless of position in frame
+                is_compressed = (height_ratio < 0.25) and (aspect_ratio > 0.8)
+                
+                # Factor 3: Moderate width + Very short (lying at angle)
+                # Position independent - works for overhead cameras
+                is_horizontal_pose = (aspect_ratio > 0.9) and (height_ratio < 0.3)
+                
+                # Factor 4: Wide box with significant area coverage
+                # Lying person shows more body surface area from above
+                is_wide_area = (aspect_ratio > 1.0) and (height_ratio < 0.35) and (area_ratio > 0.05)
+                
+                # Exclude false positives: 
+                # Standing person with stretched arms will have:
+                # - Tall bounding box (height_ratio > 0.45)
+                # Standing person appears taller even from overhead camera
+                is_likely_standing = (height_ratio > 0.45)
+                
+                # Multi-condition fall detection with false positive filter
+                fall_conditions = {
+                    'lying_wide': is_lying_wide,
+                    'compressed': is_compressed,
+                    'horizontal_pose': is_horizontal_pose,
+                    'wide_area': is_wide_area
+                }
+                
+                # Person is fallen if ANY condition is met AND they're not likely standing
+                is_fallen = any(fall_conditions.values()) and not is_likely_standing
                 
                 if is_fallen:
                     # Position the "Fall Detected" text above the detected person
@@ -205,24 +232,19 @@ while True:
                                      thickness=3, scale=2, colorR=(0, 0, 255))  # Red color for alert
                     
                     # Determine which condition triggered the detection
-                    triggered_conditions = []
-                    if is_wide: triggered_conditions.append("Wide")
-                    if is_low_in_frame and is_short_box: triggered_conditions.append("Low+Short")
-                    if is_very_low and aspect_ratio > 0.6: triggered_conditions.append("VeryLow")
-                    if is_very_thin: triggered_conditions.append("VeryThin")
+                    triggered = [k for k, v in fall_conditions.items() if v]
                     
-                    print(f"FALL DETECTED! Ratio: {aspect_ratio:.2f}, Height%: {height_ratio:.2f}, "
-                          f"Pos%: {relative_height:.2f}, Triggers: {triggered_conditions}")
+                    print(f"  *** FALL DETECTED! ***")
+                    print(f"  Triggered by: {triggered}")
+                    print(f"  Standing check: {is_likely_standing}")
+                else:
+                    print(f"  Status: Standing/Normal")
+                    if is_likely_standing:
+                        print(f"  Reason: Likely standing (tall or elevated)")
                 
-                # Show detailed debugging info
-                cvzone.putTextRect(frame, f'R:{aspect_ratio:.2f} H%:{height_ratio:.2f}', [x1, y2 + 10], 
+                # Show detailed debugging info on frame
+                cvzone.putTextRect(frame, f'R:{aspect_ratio:.2f} H:{height_ratio:.2f}', [x1, y2 + 10], 
                                  thickness=1, scale=1)
-                
-                # Debug output for analysis
-                if not is_fallen:
-                    print(f"Person NOT fallen - Ratio: {aspect_ratio:.2f}, Height%: {height_ratio:.2f}, "
-                          f"Pos%: {relative_height:.2f}, Wide: {is_wide}, Low: {is_low_in_frame}, "
-                          f"Short: {is_short_box}, VeryLow: {is_very_low}, Thin: {is_very_thin}")
 
     # Write the frame to output video (if recording is enabled)
     if out is not None:
