@@ -11,8 +11,8 @@ from datetime import datetime
 root = tk.Tk()
 root.withdraw()
 
-# Ask user to choose between file or RTSP stream
-choice = input("Choose input source:\n1. Video file\n2. RTSP Camera Stream\nEnter choice (1 or 2): ").strip()
+# Ask user to choose between file, RTSP stream, or webcam
+choice = input("Choose input source:\n1. Video file\n2. RTSP Camera Stream\n3. Webcam\nEnter choice (1, 2, or 3): ").strip()
 
 if choice == '1':
     # Open file dialog to select video
@@ -34,6 +34,7 @@ if choice == '1':
     
     print(f"Selected video: {video_path}")
     is_rtsp_stream = False
+    is_webcam = False
 
 elif choice == '2':
     # Get RTSP URL from user
@@ -52,6 +53,23 @@ elif choice == '2':
     
     print(f"Connecting to RTSP stream: {video_path}")
     is_rtsp_stream = True
+    is_webcam = False
+
+elif choice == '3':
+    # Use webcam
+    print("\nWebcam Configuration:")
+    webcam_id = input("Enter webcam ID (0 for default, 1 for second camera, etc.): ").strip()
+    
+    # Use default webcam if no input or invalid input
+    try:
+        video_path = int(webcam_id) if webcam_id else 0
+    except ValueError:
+        print("Invalid webcam ID. Using default webcam (0)...")
+        video_path = 0
+    
+    print(f"Using webcam ID: {video_path}")
+    is_rtsp_stream = False
+    is_webcam = True
 
 else:
     print("Invalid choice. Exiting...")
@@ -64,6 +82,11 @@ if is_rtsp_stream:
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size for lower latency
     cap.set(cv2.CAP_PROP_FPS, 25)  # Set FPS for RTSP
     print("Connecting to RTSP stream... This may take a few seconds...")
+elif is_webcam:
+    print("Connecting to webcam... This may take a few seconds...")
+    # Optional: Set webcam resolution for better performance
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
 # Check if video/stream opened successfully
 if not cap.isOpened():
@@ -75,20 +98,30 @@ if not cap.isOpened():
         print("- Camera credentials (username/password)")
         print("- Camera IP and port")
         print("- Firewall settings")
+    elif is_webcam:
+        print(f"Error: Could not open webcam with ID '{video_path}'")
+        print("Please check:")
+        print("- Webcam is properly connected")
+        print("- Webcam drivers are installed")
+        print("- No other application is using the webcam")
+        print("- Try a different webcam ID (0, 1, 2, etc.)")
     else:
         print(f"Error: Could not open video file '{video_path}'")
         print("Please make sure the file exists and is a valid video format.")
     exit()
 
 # Get video properties for output
-fps = int(cap.get(cv2.CAP_PROP_FPS)) if not is_rtsp_stream else 25  # Default 25 FPS for RTSP
+if is_webcam or is_rtsp_stream:
+    fps = 25  # Default FPS for webcam and RTSP
+else:
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
 width = 980  # Using the resized width
 height = 740  # Using the resized height
 
 # Video writer setup
 out = None
-if not is_rtsp_stream:
-    # Only save video files, not live streams
+if not is_rtsp_stream and not is_webcam:
+    # Only save video files, not live streams or webcam
     current_folder = os.path.dirname(os.path.abspath(__file__))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     input_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -100,21 +133,27 @@ if not is_rtsp_stream:
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     print(f"Processed video will be saved as: {output_filename}")
 else:
-    # For RTSP streams, ask if user wants to record
-    record_choice = input("Do you want to record the RTSP stream? (y/n): ").strip().lower()
+    # For RTSP streams and webcam, ask if user wants to record
+    source_name = "RTSP stream" if is_rtsp_stream else "webcam"
+    record_choice = input(f"Do you want to record the {source_name}? (y/n): ").strip().lower()
     if record_choice == 'y':
         current_folder = os.path.dirname(os.path.abspath(__file__))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"fall_detection_rtsp_stream_{timestamp}.mp4"
+        if is_rtsp_stream:
+            output_filename = f"fall_detection_rtsp_stream_{timestamp}.mp4"
+        else:
+            output_filename = f"fall_detection_webcam_{timestamp}.mp4"
         output_path = os.path.join(current_folder, output_filename)
         
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        print(f"Recording RTSP stream to: {output_filename}")
+        print(f"Recording {source_name} to: {output_filename}")
 
 print("Connection established! Starting fall detection...")
 if is_rtsp_stream:
     print("Live RTSP stream - Press 't' to stop")
+elif is_webcam:
+    print("Live webcam - Press 't' to stop")
 else:
     print("Press 't' to stop the video")
 
@@ -194,37 +233,44 @@ while True:
                 area_ratio = bbox_area / frame_area
                 
                 # Factor 1: Wide aspect ratio + Small height (classic lying down)
-                # Must have BOTH wide ratio AND small height to avoid stretched arms false positive
-                is_lying_wide = (aspect_ratio > 1.2) and (height_ratio < 0.35)
+                # Relaxed height threshold for webcam and close-range cameras
+                is_lying_wide = (aspect_ratio > 1.2) and (height_ratio < 0.45)
                 
                 # Factor 2: Very short box (compressed/flat appearance from overhead)
                 # Regardless of position in frame
-                is_compressed = (height_ratio < 0.25) and (aspect_ratio > 0.8)
+                is_compressed = (height_ratio < 0.30) and (aspect_ratio > 0.8)
                 
-                # Factor 3: Moderate width + Very short (lying at angle)
-                # Position independent - works for overhead cameras
-                is_horizontal_pose = (aspect_ratio > 0.9) and (height_ratio < 0.3)
+                # Factor 3: Moderate width + Reasonable short height (lying at angle)
+                # Position independent - works for overhead cameras and webcams
+                is_horizontal_pose = (aspect_ratio > 0.9) and (height_ratio < 0.4)
                 
                 # Factor 4: Wide box with significant area coverage
                 # Lying person shows more body surface area from above
-                is_wide_area = (aspect_ratio > 1.0) and (height_ratio < 0.35) and (area_ratio > 0.05)
+                is_wide_area = (aspect_ratio > 1.0) and (height_ratio < 0.45) and (area_ratio > 0.05)
+                
+                # Factor 5: Very wide aspect ratio (clear horizontal orientation)
+                # Strong indicator of lying down regardless of height
+                is_very_wide = (aspect_ratio > 1.8) and (height_ratio < 0.55)
                 
                 # Exclude false positives: 
                 # Standing person with stretched arms will have:
-                # - Tall bounding box (height_ratio > 0.45)
-                # Standing person appears taller even from overhead camera
-                is_likely_standing = (height_ratio > 0.45)
+                # - Tall bounding box (height_ratio > 0.55)
+                # Increased threshold to avoid missing falls in webcam scenarios
+                is_likely_standing = (height_ratio > 0.55)
                 
                 # Multi-condition fall detection with false positive filter
                 fall_conditions = {
                     'lying_wide': is_lying_wide,
                     'compressed': is_compressed,
                     'horizontal_pose': is_horizontal_pose,
-                    'wide_area': is_wide_area
+                    'wide_area': is_wide_area,
+                    'very_wide': is_very_wide
                 }
                 
-                # Person is fallen if ANY condition is met AND they're not likely standing
-                is_fallen = any(fall_conditions.values()) and not is_likely_standing
+                # Higher confidence: Require at least 2 conditions to be met
+                # AND person must not be standing
+                conditions_met = sum(fall_conditions.values())
+                is_fallen = (conditions_met >= 2) and not is_likely_standing
                 
                 if is_fallen:
                     # Position the "Fall Detected" text above the detected person
@@ -235,12 +281,14 @@ while True:
                     triggered = [k for k, v in fall_conditions.items() if v]
                     
                     print(f"  *** FALL DETECTED! ***")
-                    print(f"  Triggered by: {triggered}")
+                    print(f"  Triggered by: {triggered} ({conditions_met}/5 conditions met)")
                     print(f"  Standing check: {is_likely_standing}")
                 else:
-                    print(f"  Status: Standing/Normal")
+                    print(f"  Status: Standing/Normal ({conditions_met}/5 conditions met)")
                     if is_likely_standing:
                         print(f"  Reason: Likely standing (tall or elevated)")
+                    elif conditions_met == 1:
+                        print(f"  Reason: Only 1 condition met (need 2+)")
                 
                 # Show detailed debugging info on frame
                 cvzone.putTextRect(frame, f'R:{aspect_ratio:.2f} H:{height_ratio:.2f}', [x1, y2 + 10], 
@@ -277,5 +325,7 @@ if out is not None:
 else:
     if is_rtsp_stream:
         print("RTSP stream monitoring completed (no recording)")
+    elif is_webcam:
+        print("Webcam monitoring completed (no recording)")
     else:
         print("Video processing completed")
