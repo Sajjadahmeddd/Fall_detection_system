@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import filedialog
 import os
 from datetime import datetime
+import config  # Import configuration settings
 
 # Create a root window and hide it
 root = tk.Tk()
@@ -157,10 +158,10 @@ elif is_webcam:
 else:
     print("Press 't' to stop the video")
 
-model = YOLO('yolov8s.pt')
+model = YOLO(config.MODEL_PATH)
 
 classnames = []
-with open('classes.txt', 'r') as f:
+with open(config.CLASSES_FILE, 'r') as f:
     classnames = f.read().splitlines()
 
 
@@ -172,7 +173,7 @@ while True:
         print("End of video or failed to read frame")
         break
         
-    frame = cv2.resize(frame, (980,740))
+    frame = cv2.resize(frame, (config.DEFAULT_FRAME_WIDTH, config.DEFAULT_FRAME_HEIGHT))
 
     results = model(frame)
 
@@ -195,7 +196,7 @@ while True:
             # Calculate aspect ratio (width/height)
             aspect_ratio = width / height if height > 0 else 0
             
-            if conf > 80 and class_detect == 'person':
+            if conf > config.CONFIDENCE_THRESHOLD and class_detect == 'person':
                 cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6)
                 cvzone.putTextRect(frame, f'{class_detect}', [x1 + 8, y1 - 12], thickness=2, scale=2)
                 
@@ -234,29 +235,29 @@ while True:
                 
                 # Factor 1: Wide aspect ratio + Small height (classic lying down)
                 # Relaxed height threshold for webcam and close-range cameras
-                is_lying_wide = (aspect_ratio > 1.2) and (height_ratio < 0.45)
+                is_lying_wide = (aspect_ratio > config.LYING_WIDE_RATIO) and (height_ratio < config.LYING_WIDE_HEIGHT)
                 
                 # Factor 2: Very short box (compressed/flat appearance from overhead)
                 # Regardless of position in frame
-                is_compressed = (height_ratio < 0.30) and (aspect_ratio > 0.8)
+                is_compressed = (height_ratio < config.COMPRESSED_HEIGHT) and (aspect_ratio > config.COMPRESSED_RATIO)
                 
                 # Factor 3: Moderate width + Reasonable short height (lying at angle)
                 # Position independent - works for overhead cameras and webcams
-                is_horizontal_pose = (aspect_ratio > 0.9) and (height_ratio < 0.4)
+                is_horizontal_pose = (aspect_ratio > config.HORIZONTAL_RATIO) and (height_ratio < config.HORIZONTAL_HEIGHT)
                 
                 # Factor 4: Wide box with significant area coverage
                 # Lying person shows more body surface area from above
-                is_wide_area = (aspect_ratio > 1.0) and (height_ratio < 0.45) and (area_ratio > 0.05)
+                is_wide_area = (aspect_ratio > config.WIDE_AREA_RATIO) and (height_ratio < config.WIDE_AREA_HEIGHT) and (area_ratio > config.WIDE_AREA_COVERAGE)
                 
                 # Factor 5: Very wide aspect ratio (clear horizontal orientation)
                 # Strong indicator of lying down regardless of height
-                is_very_wide = (aspect_ratio > 1.8) and (height_ratio < 0.55)
+                is_very_wide = (aspect_ratio > config.VERY_WIDE_RATIO) and (height_ratio < config.VERY_WIDE_HEIGHT)
                 
                 # Exclude false positives: 
                 # Standing person with stretched arms will have:
                 # - Tall bounding box (height_ratio > 0.55)
                 # Increased threshold to avoid missing falls in webcam scenarios
-                is_likely_standing = (height_ratio > 0.55)
+                is_likely_standing = (height_ratio > config.STANDING_HEIGHT_THRESHOLD)
                 
                 # Multi-condition fall detection with false positive filter
                 fall_conditions = {
@@ -270,7 +271,7 @@ while True:
                 # Higher confidence: Require at least 2 conditions to be met
                 # AND person must not be standing
                 conditions_met = sum(fall_conditions.values())
-                is_fallen = (conditions_met >= 2) and not is_likely_standing
+                is_fallen = (conditions_met >= config.MIN_CONDITIONS_FOR_FALL) and not is_likely_standing
                 
                 if is_fallen:
                     # Position the "Fall Detected" text above the detected person

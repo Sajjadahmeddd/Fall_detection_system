@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Fall Detection System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Particles Background -->
+    <div id="particles-js"></div>
+    
+    <!-- Main Container -->
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <i class="fas fa-shield-alt"></i>
+                <h1>AI Fall Detection System</h1>
+            </div>
+            <div class="header-stats">
+                <div class="stat-item">
+                    <i class="fas fa-video"></i>
+                    <span id="status-badge" class="badge badge-inactive">Inactive</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Panel - Video Feed -->
+            <div class="panel video-panel">
+                <div class="panel-header">
+                    <i class="fas fa-camera"></i>
+                    <h2>Live Feed</h2>
+                </div>
+                <div class="video-container">
+                    <img id="video-feed" src="" alt="Video Feed">
+                    <div class="video-overlay" id="video-overlay">
+                        <i class="fas fa-play-circle"></i>
+                        <p>Start detection to view live feed</p>
+                    </div>
+                </div>
+                
+                <!-- Stats Bar -->
+                <div class="stats-bar">
+                    <div class="stat">
+                        <i class="fas fa-users"></i>
+                        <div>
+                            <span class="stat-value" id="person-count">0</span>
+                            <span class="stat-label">People Detected</span>
+                        </div>
+                    </div>
+                    <div class="stat">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <div>
+                            <span class="stat-value" id="fall-count">0</span>
+                            <span class="stat-label">Falls Detected</span>
+                        </div>
+                    </div>
+                    <div class="stat">
+                        <i class="fas fa-clock"></i>
+                        <div>
+                            <span class="stat-value" id="current-time">--:--:--</span>
+                            <span class="stat-label">Current Time</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel - Controls & Alerts -->
+            <div class="right-panel">
+                <!-- Control Panel -->
+                <div class="panel control-panel">
+                    <div class="panel-header">
+                        <i class="fas fa-sliders-h"></i>
+                        <h2>Controls</h2>
+                    </div>
+                    <div class="panel-content">
+                        <!-- Source Selection -->
+                        <div class="form-group">
+                            <label for="source-type">
+                                <i class="fas fa-video"></i>
+                                Source Type
+                            </label>
+                            <select id="source-type" class="form-control">
+                                <option value="webcam">Webcam</option>
+                                <option value="rtsp">RTSP Stream</option>
+                                <option value="file">Video File</option>
+                            </select>
+                        </div>
+
+                        <!-- Source Input -->
+                        <div class="form-group">
+                            <label for="source-input">
+                                <i class="fas fa-link"></i>
+                                <span id="source-label">Webcam ID (0, 1, 2...)</span>
+                            </label>
+                            <input type="text" id="source-input" class="form-control" placeholder="0" value="0">
+                        </div>
+
+                        <!-- Control Buttons -->
+                        <div class="button-group">
+                            <button id="start-btn" class="btn btn-primary">
+                                <i class="fas fa-play"></i>
+                                Start Detection
+                            </button>
+                            <button id="stop-btn" class="btn btn-danger" disabled>
+                                <i class="fas fa-stop"></i>
+                                Stop Detection
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alert Panel -->
+                <div class="panel alert-panel">
+                    <div class="panel-header">
+                        <i class="fas fa-bell"></i>
+                        <h2>Alert History</h2>
+                        <button id="clear-alerts-btn" class="btn-icon" title="Clear Alerts">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                    <div class="panel-content">
+                        <div id="alert-list" class="alert-list">
+                            <div class="no-alerts">
+                                <i class="fas fa-check-circle"></i>
+                                <p>No alerts yet</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fall Alert Modal -->
+    <div id="alert-modal" class="modal">
+        <div class="modal-content alert-modal-content">
+            <div class="modal-header">
+                <i class="fas fa-exclamation-triangle"></i>
+                <h2>FALL DETECTED!</h2>
+            </div>
+            <div class="modal-body">
+                <p id="alert-message">A fall has been detected in the monitored area!</p>
+                <p id="alert-time" class="alert-time"></p>
+            </div>
+            <div class="modal-footer">
+                <button id="acknowledge-btn" class="btn btn-primary">
+                    <i class="fas fa-check"></i>
+                    Acknowledge
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/particles.js/2.0.0/particles.min.js"></script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
