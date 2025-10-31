@@ -291,10 +291,15 @@ if __name__ == '__main__':
     print("\n" + "="*60)
     print("✨ Server is running!")
     print("="*60)
+    # Read port and host from environment (fallback to 8000)
+    port = int(os.environ.get('PORT', '8000'))
+    host = os.environ.get('HOST', '0.0.0.0')
+
     print("\n📱 Access the application at:")
-    print("   → Local:   http://localhost:5000")
-    print("   → Network: http://0.0.0.0:5000")
+    print(f"   → Local:   http://localhost:{port}")
+    print(f"   → Network: http://{host}:{port}")
     print("\n💡 Press CTRL+C to stop the server")
     print("="*60 + "\n")
-    
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+
+    # Start SocketIO server on configured port
+    socketio.run(app, debug=True, host=host, port=port, allow_unsafe_werkzeug=True)
