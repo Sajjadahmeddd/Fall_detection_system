@@ -85,19 +85,20 @@
                                 Source Type
                             </label>
                             <select id="source-type" class="form-control">
-                                <option value="webcam">Webcam</option>
+                                <option value="client_camera">Client Camera (Your Device)</option>
+                                <option value="webcam">Server Webcam</option>
                                 <option value="rtsp">RTSP Stream</option>
                                 <option value="file">Video File</option>
                             </select>
                         </div>
 
                         <!-- Source Input -->
-                        <div class="form-group">
+                        <div class="form-group" id="source-input-group">
                             <label for="source-input">
                                 <i class="fas fa-link"></i>
-                                <span id="source-label">Webcam ID (0, 1, 2...)</span>
+                                <span id="source-label">Using your device camera</span>
                             </label>
-                            <input type="text" id="source-input" class="form-control" placeholder="0" value="0">
+                            <input type="text" id="source-input" class="form-control" placeholder="No input needed" value="" disabled>
                         </div>
 
                         <!-- Control Buttons -->

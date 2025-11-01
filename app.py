@@ -9,11 +9,13 @@ import time
 from datetime import datetime
 import json
 import os
+import base64
+import numpy as np
 import config  # Import configuration
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'fall_detection_secret_key_2024'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=10**8)
 
 # Global variables
 camera = None
@@ -24,6 +26,9 @@ fall_detected_flag = False
 fall_alert_history = []
 current_source = None
 source_type = None
+use_client_camera = False
+latest_frame = None
+frame_lock = threading.Lock()
 
 # Load configuration from config.py
 MAX_ALERT_HISTORY = config.MAX_ALERT_HISTORY
@@ -137,9 +142,67 @@ def detect_fall(frame, box, confidence):
     
     return detection_data
 
-# Generate video frames
+# Process frame (common function for both server and client camera)
+def process_frame(frame):
+    """Process a single frame and return the annotated frame"""
+    global model, classnames
+    
+    # Resize frame
+    frame = cv2.resize(frame, (config.DEFAULT_FRAME_WIDTH, config.DEFAULT_FRAME_HEIGHT))
+    
+    # Run detection
+    results = model(frame)
+    
+    person_count = 0
+    fall_count = 0
+    
+    for info in results:
+        parameters = info.boxes
+        for box in parameters:
+            confidence = box.conf[0]
+            class_detect = box.cls[0]
+            class_detect = int(class_detect)
+            class_name = classnames[class_detect]
+            conf = math.ceil(confidence * 100)
+            
+            if conf > config.CONFIDENCE_THRESHOLD and class_name == 'person':
+                person_count += 1
+                
+                # Get detection data
+                detection = detect_fall(frame, box, confidence)
+                
+                x1, y1, x2, y2 = detection['x1'], detection['y1'], detection['x2'], detection['y2']
+                width, height = detection['width'], detection['height']
+                
+                # Draw bounding box
+                if detection['is_fallen']:
+                    fall_count += 1
+                    # Red box for fall
+                    cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 0, 255))
+                    cvzone.putTextRect(frame, 'FALL DETECTED!', [x1, max(y1 - 50, 10)], 
+                                     thickness=3, scale=2, colorR=(0, 0, 255))
+                else:
+                    # Green box for normal
+                    cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 255, 0))
+                    cvzone.putTextRect(frame, f'{class_name}', [x1 + 8, y1 - 12], 
+                                     thickness=2, scale=2, colorR=(0, 255, 0))
+                
+                # Show metrics
+                cvzone.putTextRect(frame, f'R:{detection["aspect_ratio"]} H:{detection["height_ratio"]}', 
+                                 [x1, y2 + 10], thickness=1, scale=1)
+    
+    # Send stats via WebSocket
+    socketio.emit('stats_update', {
+        'person_count': person_count,
+        'fall_count': fall_count,
+        'timestamp': datetime.now().strftime("%H:%M:%S")
+    })
+    
+    return frame
+
+# Generate video frames (for server camera)
 def generate_frames():
-    global camera, is_running, model
+    global camera, is_running
     
     while is_running and camera is not None:
         success, frame = camera.read()
@@ -147,56 +210,8 @@ def generate_frames():
         if not success:
             break
         
-        # Resize frame
-        frame = cv2.resize(frame, (config.DEFAULT_FRAME_WIDTH, config.DEFAULT_FRAME_HEIGHT))
-        
-        # Run detection
-        results = model(frame)
-        
-        person_count = 0
-        fall_count = 0
-        
-        for info in results:
-            parameters = info.boxes
-            for box in parameters:
-                confidence = box.conf[0]
-                class_detect = box.cls[0]
-                class_detect = int(class_detect)
-                class_name = classnames[class_detect]
-                conf = math.ceil(confidence * 100)
-                
-                if conf > config.CONFIDENCE_THRESHOLD and class_name == 'person':
-                    person_count += 1
-                    
-                    # Get detection data
-                    detection = detect_fall(frame, box, confidence)
-                    
-                    x1, y1, x2, y2 = detection['x1'], detection['y1'], detection['x2'], detection['y2']
-                    width, height = detection['width'], detection['height']
-                    
-                    # Draw bounding box
-                    if detection['is_fallen']:
-                        fall_count += 1
-                        # Red box for fall
-                        cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 0, 255))
-                        cvzone.putTextRect(frame, 'FALL DETECTED!', [x1, max(y1 - 50, 10)], 
-                                         thickness=3, scale=2, colorR=(0, 0, 255))
-                    else:
-                        # Green box for normal
-                        cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 255, 0))
-                        cvzone.putTextRect(frame, f'{class_name}', [x1 + 8, y1 - 12], 
-                                         thickness=2, scale=2, colorR=(0, 255, 0))
-                    
-                    # Show metrics
-                    cvzone.putTextRect(frame, f'R:{detection["aspect_ratio"]} H:{detection["height_ratio"]}', 
-                                     [x1, y2 + 10], thickness=1, scale=1)
-        
-        # Send stats via WebSocket
-        socketio.emit('stats_update', {
-            'person_count': person_count,
-            'fall_count': fall_count,
-            'timestamp': datetime.now().strftime("%H:%M:%S")
-        })
+        # Process frame
+        frame = process_frame(frame)
         
         # Encode frame
         ret, buffer = cv2.imencode('.jpg', frame)
@@ -217,26 +232,37 @@ def video_feed():
 
 @app.route('/start_detection', methods=['POST'])
 def start_detection():
-    global is_running
+    global is_running, use_client_camera
     
     data = request.json
     source = data.get('source', '0')
     src_type = data.get('type', 'webcam')
     
-    if src_type == 'webcam':
-        source = int(source)
-    
-    if init_camera(source, src_type):
+    # Check if client wants to use their own camera
+    if src_type == 'client_camera':
+        use_client_camera = True
         is_running = True
-        return jsonify({'status': 'success', 'message': 'Detection started'})
+        return jsonify({'status': 'success', 'message': 'Client camera mode enabled'})
     else:
-        return jsonify({'status': 'error', 'message': 'Failed to open camera'}), 400
+        use_client_camera = False
+        if src_type == 'webcam':
+            source = int(source)
+        
+        if init_camera(source, src_type):
+            is_running = True
+            return jsonify({'status': 'success', 'message': 'Detection started'})
+        else:
+            return jsonify({'status': 'error', 'message': 'Failed to open camera'}), 400
 
 @app.route('/stop_detection', methods=['POST'])
 def stop_detection():
-    global is_running, camera
+    global is_running, camera, use_client_camera, latest_frame
     
     is_running = False
+    use_client_camera = False
+    with frame_lock:
+        latest_frame = None
+    
     if camera is not None:
         camera.release()
         camera = None
@@ -271,6 +297,33 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     print('Client disconnected')
+
+@socketio.on('frame')
+def handle_frame(data):
+    """Receive frame from client camera"""
+    global latest_frame, use_client_camera
+    
+    if not use_client_camera or not is_running:
+        return
+    
+    try:
+        # Decode base64 image
+        img_data = base64.b64decode(data.split(',')[1])
+        nparr = np.frombuffer(img_data, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame is not None:
+            # Process the frame
+            processed_frame = process_frame(frame)
+            
+            # Encode processed frame back to base64
+            ret, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                processed_b64 = base64.b64encode(buffer).decode('utf-8')
+                # Send processed frame back to client
+                emit('processed_frame', f'data:image/jpeg;base64,{processed_b64}')
+    except Exception as e:
+        print(f"Error processing frame: {e}")
 
 @app.route('/health', methods=['GET'])
 def health_check():

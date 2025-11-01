@@ -4,15 +4,31 @@ An advanced fall detection system using YOLO object detection and computer visio
 
 ## Features
 
-- **Multi-Video Support**: Select any video file from your computer for fall detection
+### Core Features
+- **Multi-Source Support**: 
+  - **Client Camera Mode** (NEW): Use the camera of any device accessing the web app
+  - Webcam support
+  - RTSP stream support
+  - Video file support
 - **Advanced Detection Algorithm**: Uses multiple factors for accurate fall detection:
   - Aspect ratio analysis
   - Position-based detection
   - Size-relative detection
   - Camera angle compensation
 - **Real-time Processing**: Live video analysis with visual feedback
-- **Video Output**: Saves processed video with annotations
-- **Debug Information**: Shows detection parameters and ratios
+- **Web Application**: Modern web interface for easy access
+- **Real-time Alerts**: Instant notifications when falls are detected
+- **Alert History**: Track all detected fall events
+- **Remote Access**: Works with port forwarding and dev tunnels
+
+### NEW: Client Camera Mode 🎥
+The system now supports using the camera of any device (phone, tablet, laptop) that accesses the web application! Perfect for:
+- Remote monitoring from any location
+- Mobile device deployment
+- Distributed monitoring across multiple devices
+- Port forwarded/dev tunnel setups
+
+👉 **See [CLIENT_CAMERA_GUIDE.md](CLIENT_CAMERA_GUIDE.md) for detailed setup instructions**
 
 ## Requirements
 

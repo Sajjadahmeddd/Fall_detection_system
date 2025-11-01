@@ -23,6 +23,10 @@ const alertTime = document.getElementById('alert-time');
 // State
 let isRunning = false;
 let alertSound = null;
+let clientStream = null;
+let clientVideo = null;
+let frameInterval = null;
+let canvasElement = null;
 
 // Initialize Particles.js
 particlesJS('particles-js', {
@@ -77,20 +81,29 @@ updateClock();
 sourceType.addEventListener('change', () => {
     const type = sourceType.value;
     switch(type) {
+        case 'client_camera':
+            sourceLabel.innerHTML = '<i class="fas fa-link"></i> Using your device camera';
+            sourceInput.placeholder = 'No input needed';
+            sourceInput.value = '';
+            sourceInput.disabled = true;
+            break;
         case 'webcam':
             sourceLabel.innerHTML = '<i class="fas fa-link"></i> Webcam ID (0, 1, 2...)';
             sourceInput.placeholder = '0';
             sourceInput.value = '0';
+            sourceInput.disabled = false;
             break;
         case 'rtsp':
             sourceLabel.innerHTML = '<i class="fas fa-link"></i> RTSP URL';
             sourceInput.placeholder = 'rtsp://username:password@ip:port/stream';
             sourceInput.value = '';
+            sourceInput.disabled = false;
             break;
         case 'file':
             sourceLabel.innerHTML = '<i class="fas fa-link"></i> Video File Path';
             sourceInput.placeholder = 'path/to/video.mp4';
             sourceInput.value = '';
+            sourceInput.disabled = false;
             break;
     }
 });
@@ -100,7 +113,8 @@ startBtn.addEventListener('click', async () => {
     const source = sourceInput.value.trim();
     const type = sourceType.value;
     
-    if (!source) {
+    // Validate input for non-client camera sources
+    if (type !== 'client_camera' && !source) {
         showNotification('Please enter a valid source', 'error');
         return;
     }
@@ -109,18 +123,34 @@ startBtn.addEventListener('click', async () => {
         startBtn.disabled = true;
         startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
         
+        // If client camera, request camera access
+        if (type === 'client_camera') {
+            await startClientCamera();
+        }
+        
         const response = await fetch('/start_detection', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source, type })
+            body: JSON.stringify({ source: source || 'client', type })
         });
         
         const data = await response.json();
         
         if (data.status === 'success') {
             isRunning = true;
-            videoFeed.src = '/video_feed?' + new Date().getTime();
-            videoOverlay.classList.add('hidden');
+            
+            if (type === 'client_camera') {
+                // For client camera, start sending frames
+                startFrameStreaming();
+                // Hide overlay since we'll show processed feed
+                videoOverlay.classList.add('hidden');
+                // Note: videoFeed.src will be updated by processed_frame WebSocket event
+            } else {
+                // For server camera, use video feed endpoint
+                videoFeed.src = '/video_feed?' + new Date().getTime();
+                videoOverlay.classList.add('hidden');
+            }
+            
             statusBadge.textContent = 'Active';
             statusBadge.classList.remove('badge-inactive');
             statusBadge.classList.add('badge-active');
@@ -136,6 +166,7 @@ startBtn.addEventListener('click', async () => {
         showNotification('Failed to start detection: ' + error.message, 'error');
         startBtn.disabled = false;
         startBtn.innerHTML = '<i class="fas fa-play"></i> Start Detection';
+        stopClientCamera();
     }
 });
 
@@ -154,6 +185,10 @@ stopBtn.addEventListener('click', async () => {
         
         if (data.status === 'success') {
             isRunning = false;
+            
+            // Stop client camera if active
+            stopClientCamera();
+            
             videoFeed.src = '';
             videoOverlay.classList.remove('hidden');
             statusBadge.textContent = 'Inactive';
@@ -214,6 +249,13 @@ socket.on('fall_alert', (alert) => {
     addAlertToList(alert);
     showAlertModal(alert);
     playAlertSound(true);
+});
+
+// Receive processed frame from server (for client camera mode)
+socket.on('processed_frame', (frameData) => {
+    if (isRunning && sourceType.value === 'client_camera') {
+        videoFeed.src = frameData;
+    }
 });
 
 // Add Alert to List
@@ -337,3 +379,93 @@ alertModal.addEventListener('click', (e) => {
         playAlertSound(false);
     }
 });
+
+// Client Camera Functions
+async function startClientCamera() {
+    try {
+        // Request camera access with specific constraints
+        const constraints = {
+            video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'user'
+            },
+            audio: false
+        };
+        
+        clientStream = await navigator.mediaDevices.getUserMedia(constraints);
+        
+        // Create video element to capture frames
+        if (!clientVideo) {
+            clientVideo = document.createElement('video');
+            clientVideo.autoplay = true;
+            clientVideo.playsInline = true;
+        }
+        
+        clientVideo.srcObject = clientStream;
+        
+        // Create canvas for frame capture
+        if (!canvasElement) {
+            canvasElement = document.createElement('canvas');
+        }
+        
+        console.log('Client camera started successfully');
+    } catch (error) {
+        console.error('Error accessing client camera:', error);
+        throw new Error('Could not access camera. Please ensure camera permissions are granted.');
+    }
+}
+
+function stopClientCamera() {
+    // Stop frame streaming
+    if (frameInterval) {
+        clearInterval(frameInterval);
+        frameInterval = null;
+    }
+    
+    // Stop media stream
+    if (clientStream) {
+        clientStream.getTracks().forEach(track => track.stop());
+        clientStream = null;
+    }
+    
+    // Clean up video element
+    if (clientVideo) {
+        clientVideo.srcObject = null;
+    }
+    
+    console.log('Client camera stopped');
+}
+
+function startFrameStreaming() {
+    if (frameInterval) {
+        clearInterval(frameInterval);
+    }
+    
+    // Send frames at ~15 FPS to balance quality and performance
+    frameInterval = setInterval(() => {
+        if (clientVideo && clientVideo.readyState === clientVideo.HAVE_ENOUGH_DATA && isRunning) {
+            captureAndSendFrame();
+        }
+    }, 66); // ~15 FPS
+}
+
+function captureAndSendFrame() {
+    try {
+        // Set canvas size to match video
+        canvasElement.width = clientVideo.videoWidth;
+        canvasElement.height = clientVideo.videoHeight;
+        
+        // Draw current video frame to canvas
+        const ctx = canvasElement.getContext('2d');
+        ctx.drawImage(clientVideo, 0, 0, canvasElement.width, canvasElement.height);
+        
+        // Convert canvas to base64 JPEG
+        const frameData = canvasElement.toDataURL('image/jpeg', 0.8);
+        
+        // Send frame to server via WebSocket
+        socket.emit('frame', frameData);
+    } catch (error) {
+        console.error('Error capturing frame:', error);
+    }
+}
