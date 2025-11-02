@@ -1,5 +1,10 @@
 // Initialize Socket.IO
-const socket = io();
+const socket = io({
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: 5
+});
 
 // DOM Elements
 const startBtn = document.getElementById('start-btn');
@@ -27,6 +32,8 @@ let clientStream = null;
 let clientVideo = null;
 let frameInterval = null;
 let canvasElement = null;
+let frameCount = 0;
+const FRAME_SKIP = 1;  // Send every 2nd frame (1 = skip 1, send 1)
 
 // Initialize Particles.js
 particlesJS('particles-js', {
@@ -442,12 +449,18 @@ function startFrameStreaming() {
         clearInterval(frameInterval);
     }
     
-    // Send frames at ~15 FPS to balance quality and performance
+    frameCount = 0;
+    // Send frames at ~10 FPS to balance quality and performance
+    // Using 100ms interval (10 FPS)
     frameInterval = setInterval(() => {
         if (clientVideo && clientVideo.readyState === clientVideo.HAVE_ENOUGH_DATA && isRunning) {
-            captureAndSendFrame();
+            frameCount++;
+            // Send only every (FRAME_SKIP + 1) frame
+            if (frameCount % (FRAME_SKIP + 1) === 0) {
+                captureAndSendFrame();
+            }
         }
-    }, 66); // ~15 FPS
+    }, 100); // 100ms = 10 FPS
 }
 
 function captureAndSendFrame() {
@@ -457,11 +470,11 @@ function captureAndSendFrame() {
         canvasElement.height = clientVideo.videoHeight;
         
         // Draw current video frame to canvas
-        const ctx = canvasElement.getContext('2d');
+        const ctx = canvasElement.getContext('2d', { willReadFrequently: true });
         ctx.drawImage(clientVideo, 0, 0, canvasElement.width, canvasElement.height);
         
-        // Convert canvas to base64 JPEG
-        const frameData = canvasElement.toDataURL('image/jpeg', 0.8);
+        // Convert canvas to base64 JPEG with lower quality for faster transmission
+        const frameData = canvasElement.toDataURL('image/jpeg', 0.6);
         
         // Send frame to server via WebSocket
         socket.emit('frame', frameData);

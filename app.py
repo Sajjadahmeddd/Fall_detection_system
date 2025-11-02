@@ -12,10 +12,13 @@ import os
 import base64
 import numpy as np
 import config  # Import configuration
+from collections import deque
+from queue import Queue
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'fall_detection_secret_key_2024'
-socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=10**8)
+socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=10**6, async_mode='threading', 
+                    engineio_logger=False, ping_timeout=60, ping_interval=25)
 
 # Global variables
 camera = None
@@ -23,25 +26,55 @@ model = None
 classnames = []
 is_running = False
 fall_detected_flag = False
-fall_alert_history = []
+fall_alert_history = deque(maxlen=config.MAX_ALERT_HISTORY)
 current_source = None
 source_type = None
 use_client_camera = False
 latest_frame = None
 frame_lock = threading.Lock()
+frame_skip_counter = 0
+FRAME_SKIP = 0  # Process every frame (0 = no skipping)
+JPEG_QUALITY = 75  # Reduced from 85 for faster encoding
 
 # Load configuration from config.py
 MAX_ALERT_HISTORY = config.MAX_ALERT_HISTORY
 FALL_COOLDOWN = config.FALL_COOLDOWN_SECONDS
 CONFIDENCE_THRESHOLD = config.CONFIDENCE_THRESHOLD
 
+# Detect available device
+try:
+    import torch
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+except Exception as e:
+    print(f"Warning: Could not detect CUDA. Using CPU. ({e})")
+    DEVICE = 'cpu'
+
 # Load YOLO model and classes
 def load_model():
     global model, classnames
     model = YOLO(config.MODEL_PATH)
+    
+    # Try to move to device, with fallback
+    try:
+        model.to(DEVICE)
+        if DEVICE == 'cuda':
+            try:
+                model.half()  # FP16 precision for faster inference on GPU
+                print(f"✅ Model loaded successfully on CUDA with FP16!")
+            except Exception as e:
+                print(f"⚠️ FP16 not supported, using FP32: {e}")
+                print(f"✅ Model loaded successfully on CUDA!")
+        else:
+            print(f"✅ Model loaded successfully on CPU")
+    except Exception as e:
+        print(f"⚠️ Could not move model to {DEVICE}, using CPU: {e}")
+        model.to('cpu')
+        DEVICE_ACTUAL = 'cpu'
+        print(f"✅ Model loaded successfully on CPU")
+    
     with open(config.CLASSES_FILE, 'r') as f:
         classnames = f.read().splitlines()
-    print("Model loaded successfully!")
+    print(f"✅ Classes loaded! ({len(classnames)} classes)")
 
 # Initialize camera
 def init_camera(source, src_type):
@@ -76,7 +109,12 @@ def detect_fall(frame, box, confidence):
     
     height = y2 - y1
     width = x2 - x1
-    aspect_ratio = width / height if height > 0 else 0
+    
+    # Early exit for invalid dimensions
+    if height <= 0 or width <= 0:
+        return None
+    
+    aspect_ratio = width / height
     
     frame_height, frame_width = frame.shape[:2]
     height_ratio = height / frame_height
@@ -131,10 +169,6 @@ def detect_fall(frame, box, confidence):
             }
             fall_alert_history.append(alert)
             
-            # Keep only recent alerts
-            if len(fall_alert_history) > MAX_ALERT_HISTORY:
-                fall_alert_history.pop(0)
-            
             # Send real-time alert via WebSocket
             socketio.emit('fall_alert', alert)
     else:
@@ -147,11 +181,12 @@ def process_frame(frame):
     """Process a single frame and return the annotated frame"""
     global model, classnames
     
-    # Resize frame
+    # Resize frame - using smaller size for faster inference
     frame = cv2.resize(frame, (config.DEFAULT_FRAME_WIDTH, config.DEFAULT_FRAME_HEIGHT))
     
-    # Run detection
-    results = model(frame)
+    # Run detection with optimized parameters
+    results = model(frame, verbose=False, conf=config.CONFIDENCE_THRESHOLD / 100.0, 
+                   iou=0.5, device=DEVICE)
     
     person_count = 0
     fall_count = 0
@@ -159,50 +194,71 @@ def process_frame(frame):
     for info in results:
         parameters = info.boxes
         for box in parameters:
-            confidence = box.conf[0]
-            class_detect = box.cls[0]
-            class_detect = int(class_detect)
-            class_name = classnames[class_detect]
-            conf = math.ceil(confidence * 100)
+            # Handle both CPU and GPU tensors
+            try:
+                confidence = box.conf[0]
+                if hasattr(confidence, 'cpu'):  # GPU tensor
+                    confidence = confidence.cpu().numpy()
+                else:  # CPU tensor or numpy
+                    confidence = float(confidence)
+                    
+                class_detect = box.cls[0]
+                if hasattr(class_detect, 'cpu'):  # GPU tensor
+                    class_detect = int(class_detect.cpu().numpy())
+                else:  # CPU tensor or numpy
+                    class_detect = int(class_detect)
+            except Exception as e:
+                print(f"Error converting tensors: {e}")
+                continue
             
-            if conf > config.CONFIDENCE_THRESHOLD and class_name == 'person':
-                person_count += 1
+            if class_detect < len(classnames):
+                class_name = classnames[class_detect]
+                conf = math.ceil(float(confidence) * 100)
                 
-                # Get detection data
-                detection = detect_fall(frame, box, confidence)
-                
-                x1, y1, x2, y2 = detection['x1'], detection['y1'], detection['x2'], detection['y2']
-                width, height = detection['width'], detection['height']
-                
-                # Draw bounding box
-                if detection['is_fallen']:
-                    fall_count += 1
-                    # Red box for fall
-                    cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 0, 255))
-                    cvzone.putTextRect(frame, 'FALL DETECTED!', [x1, max(y1 - 50, 10)], 
-                                     thickness=3, scale=2, colorR=(0, 0, 255))
-                else:
-                    # Green box for normal
-                    cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 255, 0))
-                    cvzone.putTextRect(frame, f'{class_name}', [x1 + 8, y1 - 12], 
-                                     thickness=2, scale=2, colorR=(0, 255, 0))
-                
-                # Show metrics
-                cvzone.putTextRect(frame, f'R:{detection["aspect_ratio"]} H:{detection["height_ratio"]}', 
-                                 [x1, y2 + 10], thickness=1, scale=1)
+                if conf > config.CONFIDENCE_THRESHOLD and class_name == 'person':
+                    person_count += 1
+                    
+                    # Get detection data
+                    detection = detect_fall(frame, box, confidence)
+                    
+                    if detection is None:
+                        continue
+                    
+                    x1, y1, x2, y2 = detection['x1'], detection['y1'], detection['x2'], detection['y2']
+                    width, height = detection['width'], detection['height']
+                    
+                    # Draw bounding box
+                    if detection['is_fallen']:
+                        fall_count += 1
+                        # Red box for fall
+                        cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 0, 255))
+                        cvzone.putTextRect(frame, 'FALL DETECTED!', [x1, max(y1 - 50, 10)], 
+                                         thickness=3, scale=2, colorR=(0, 0, 255))
+                    else:
+                        # Green box for normal
+                        cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 255, 0))
+                        cvzone.putTextRect(frame, f'{class_name}', [x1 + 8, y1 - 12], 
+                                         thickness=2, scale=2, colorR=(0, 255, 0))
+                    
+                    # Show metrics
+                    cvzone.putTextRect(frame, f'R:{detection["aspect_ratio"]} H:{detection["height_ratio"]}', 
+                                     [x1, y2 + 10], thickness=1, scale=1)
     
-    # Send stats via WebSocket
-    socketio.emit('stats_update', {
-        'person_count': person_count,
-        'fall_count': fall_count,
-        'timestamp': datetime.now().strftime("%H:%M:%S")
-    })
+    # Send stats via WebSocket (non-blocking)
+    try:
+        socketio.emit('stats_update', {
+            'person_count': person_count,
+            'fall_count': fall_count,
+            'timestamp': datetime.now().strftime("%H:%M:%S")
+        }, skip_queue=True)
+    except:
+        pass  # Skip if no active clients
     
     return frame
 
 # Generate video frames (for server camera)
 def generate_frames():
-    global camera, is_running
+    global camera, is_running, frame_skip_counter
     
     while is_running and camera is not None:
         success, frame = camera.read()
@@ -210,15 +266,23 @@ def generate_frames():
         if not success:
             break
         
+        # Skip frames for performance if needed
+        frame_skip_counter += 1
+        if frame_skip_counter % (FRAME_SKIP + 1) != 0:
+            continue
+        
         # Process frame
         frame = process_frame(frame)
         
-        # Encode frame
-        ret, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
+        # Encode frame with lower quality for faster transmission
+        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        if not ret:
+            continue
+            
+        frame_bytes = buffer.tobytes()
         
         yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 # Routes
 @app.route('/')
@@ -316,12 +380,12 @@ def handle_frame(data):
             # Process the frame
             processed_frame = process_frame(frame)
             
-            # Encode processed frame back to base64
-            ret, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            # Encode processed frame back to base64 with lower quality
+            ret, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
             if ret:
                 processed_b64 = base64.b64encode(buffer).decode('utf-8')
-                # Send processed frame back to client
-                emit('processed_frame', f'data:image/jpeg;base64,{processed_b64}')
+                # Send processed frame back to client (non-blocking)
+                emit('processed_frame', f'data:image/jpeg;base64,{processed_b64}', skip_queue=True)
     except Exception as e:
         print(f"Error processing frame: {e}")
 
