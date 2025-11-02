@@ -143,6 +143,11 @@ def detect_fall(frame, box, confidence):
     conditions_met = sum(fall_conditions.values())
     is_fallen = (conditions_met >= config.MIN_CONDITIONS_FOR_FALL) and not is_likely_standing
     
+    # DEBUG: Print detection metrics when conditions are met
+    if conditions_met > 0:
+        print(f"🔍 Detection: AR={aspect_ratio:.2f}, HR={height_ratio:.2f}, Conditions={conditions_met}, Fallen={is_fallen}")
+        print(f"   Triggered: {[k for k, v in fall_conditions.items() if v]}")
+    
     detection_data = {
         'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
         'width': width, 'height': height,
