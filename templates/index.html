@@ -36,7 +36,11 @@
                     <h2>Live Feed</h2>
                 </div>
                 <div class="video-container">
-                    <img id="video-feed" src="" alt="Video Feed">
+                    <div class="video-stack">
+                        <video id="client-video" autoplay playsinline class="hidden"></video>
+                        <img id="server-img" src="" alt="Video Feed" class="hidden">
+                        <canvas id="bbox-canvas"></canvas>
+                    </div>
                     <div class="video-overlay" id="video-overlay">
                         <i class="fas fa-play-circle"></i>
                         <p>Start detection to view live feed</p>

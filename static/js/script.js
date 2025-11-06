@@ -12,7 +12,9 @@ const stopBtn = document.getElementById('stop-btn');
 const sourceType = document.getElementById('source-type');
 const sourceInput = document.getElementById('source-input');
 const sourceLabel = document.getElementById('source-label');
-const videoFeed = document.getElementById('video-feed');
+const clientVideoEl = document.getElementById('client-video');
+const serverImgEl = document.getElementById('server-img');
+const bboxCanvas = document.getElementById('bbox-canvas');
 const videoOverlay = document.getElementById('video-overlay');
 const statusBadge = document.getElementById('status-badge');
 const personCount = document.getElementById('person-count');
@@ -29,11 +31,22 @@ const alertTime = document.getElementById('alert-time');
 let isRunning = false;
 let alertSound = null;
 let clientStream = null;
-let clientVideo = null;
 let frameInterval = null;
-let canvasElement = null;
+let captureCanvas = null; // offscreen for sending sampled frames to backend
 let frameCount = 0;
 const FRAME_SKIP = 1;  // Send every 2nd frame (1 = skip 1, send 1)
+let bboxCtx = bboxCanvas.getContext('2d');
+
+function resizeCanvasToMedia() {
+    const visibleEl = !clientVideoEl.classList.contains('hidden') ? clientVideoEl : serverImgEl;
+    const w = visibleEl.clientWidth || bboxCanvas.clientWidth;
+    const h = visibleEl.clientHeight || bboxCanvas.clientHeight;
+    bboxCanvas.width = w;
+    bboxCanvas.height = h;
+}
+// Resize canvas when media dimensions become available
+clientVideoEl.addEventListener('loadedmetadata', resizeCanvasToMedia);
+serverImgEl.addEventListener('load', resizeCanvasToMedia);
 
 // Initialize Particles.js
 particlesJS('particles-js', {
@@ -143,20 +156,25 @@ startBtn.addEventListener('click', async () => {
         
         const data = await response.json();
         
-        if (data.status === 'success') {
+            if (data.status === 'success') {
             isRunning = true;
-            
-            if (type === 'client_camera') {
-                // For client camera, start sending frames
-                startFrameStreaming();
-                // Hide overlay since we'll show processed feed
+                // Prepare UI by source type
+                if (type === 'client_camera') {
+                    // Show local video stream; do NOT fetch processed frames from server
+                    serverImgEl.src = '';
+                    serverImgEl.classList.add('hidden');
+                    clientVideoEl.classList.remove('hidden');
+                    resizeCanvasToMedia();
+                    // Start sampling frames for backend analysis (reduced rate)
+                    startFrameStreaming();
+                } else {
+                    // For server camera, use MJPEG endpoint in <img>
+                    clientVideoEl.classList.add('hidden');
+                    serverImgEl.classList.remove('hidden');
+                    serverImgEl.src = '/video_feed?' + new Date().getTime();
+                    resizeCanvasToMedia();
+                }
                 videoOverlay.classList.add('hidden');
-                // Note: videoFeed.src will be updated by processed_frame WebSocket event
-            } else {
-                // For server camera, use video feed endpoint
-                videoFeed.src = '/video_feed?' + new Date().getTime();
-                videoOverlay.classList.add('hidden');
-            }
             
             statusBadge.textContent = 'Active';
             statusBadge.classList.remove('badge-inactive');
@@ -196,7 +214,11 @@ stopBtn.addEventListener('click', async () => {
             // Stop client camera if active
             stopClientCamera();
             
-            videoFeed.src = '';
+            // Clear media elements
+            serverImgEl.src = '';
+            clientVideoEl.srcObject = null;
+            clientVideoEl.classList.add('hidden');
+            serverImgEl.classList.add('hidden');
             videoOverlay.classList.remove('hidden');
             statusBadge.textContent = 'Inactive';
             statusBadge.classList.remove('badge-active');
@@ -258,11 +280,49 @@ socket.on('fall_alert', (alert) => {
     playAlertSound(true);
 });
 
-// Receive processed frame from server (for client camera mode)
-socket.on('processed_frame', (frameData) => {
-    if (isRunning && sourceType.value === 'client_camera') {
-        videoFeed.src = frameData;
-    }
+// Receive bbox updates from server and render overlays on canvas
+socket.on('bbox_update', (payload) => {
+    if (!isRunning) return;
+    const { detections, frame_size } = payload || {};
+    if (!detections || !frame_size) return;
+
+    // Determine scale from model frame size to displayed canvas size
+    const sx = bboxCanvas.width / frame_size.width;
+    const sy = bboxCanvas.height / frame_size.height;
+
+    // Clear canvas
+    bboxCtx.clearRect(0, 0, bboxCanvas.width, bboxCanvas.height);
+
+    detections.forEach(det => {
+        const x = Math.round(det.x * sx);
+        const y = Math.round(det.y * sy);
+        const w = Math.round(det.w * sx);
+        const h = Math.round(det.h * sy);
+        const fallen = !!det.fallen;
+
+        // Style
+        bboxCtx.lineWidth = 3;
+        bboxCtx.strokeStyle = fallen ? 'rgba(255,0,0,0.95)' : 'rgba(0,255,0,0.95)';
+
+        // Draw border-only rectangle (no fill)
+        bboxCtx.strokeRect(x, y, w, h);
+
+        // Label
+        const label = fallen ? 'FALL DETECTED!' : `${det.label} ${det.conf}%`;
+        bboxCtx.font = '16px Roboto, sans-serif';
+        const textW = bboxCtx.measureText(label).width + 10;
+        const textH = 22;
+        const tx = x + 2;
+        const ty = Math.max(y - textH, 0) + textH - 6;
+        bboxCtx.fillStyle = fallen ? 'rgba(255,0,0,0.9)' : 'rgba(0,255,0,0.9)';
+        bboxCtx.fillRect(tx - 2, ty - textH + 4, textW, textH);
+        bboxCtx.fillStyle = '#000';
+        bboxCtx.fillText(label, tx, ty);
+    });
+
+    // Fallback: update counts from bbox payload if stats_update isn't received timely
+    if (typeof payload.person_count === 'number') personCount.textContent = payload.person_count;
+    if (typeof payload.fall_count === 'number') fallCount.textContent = payload.fall_count;
 });
 
 // Add Alert to List
@@ -399,23 +459,17 @@ async function startClientCamera() {
             },
             audio: false
         };
-        
         clientStream = await navigator.mediaDevices.getUserMedia(constraints);
-        
-        // Create video element to capture frames
-        if (!clientVideo) {
-            clientVideo = document.createElement('video');
-            clientVideo.autoplay = true;
-            clientVideo.playsInline = true;
-        }
-        
-        clientVideo.srcObject = clientStream;
-        
-        // Create canvas for frame capture
-        if (!canvasElement) {
-            canvasElement = document.createElement('canvas');
-        }
-        
+        clientVideoEl.srcObject = clientStream;
+        clientVideoEl.classList.remove('hidden');
+
+        // Offscreen canvas for sampling frames to backend
+        if (!captureCanvas) captureCanvas = document.createElement('canvas');
+
+        // Ensure overlay canvas matches displayed element
+        setTimeout(resizeCanvasToMedia, 100);
+        window.addEventListener('resize', resizeCanvasToMedia);
+
         console.log('Client camera started successfully');
     } catch (error) {
         console.error('Error accessing client camera:', error);
@@ -435,11 +489,9 @@ function stopClientCamera() {
         clientStream.getTracks().forEach(track => track.stop());
         clientStream = null;
     }
-    
     // Clean up video element
-    if (clientVideo) {
-        clientVideo.srcObject = null;
-    }
+    clientVideoEl.srcObject = null;
+    bboxCtx.clearRect(0, 0, bboxCanvas.width, bboxCanvas.height);
     
     console.log('Client camera stopped');
 }
@@ -450,35 +502,44 @@ function startFrameStreaming() {
     }
     
     frameCount = 0;
-    // Send frames at ~10 FPS to balance quality and performance
-    // Using 100ms interval (10 FPS)
+    // Send sampled frames at ~5 FPS to reduce bandwidth
     frameInterval = setInterval(() => {
-        if (clientVideo && clientVideo.readyState === clientVideo.HAVE_ENOUGH_DATA && isRunning) {
+        if (clientVideoEl && clientVideoEl.readyState >= 2 && isRunning) {
             frameCount++;
-            // Send only every (FRAME_SKIP + 1) frame
             if (frameCount % (FRAME_SKIP + 1) === 0) {
                 captureAndSendFrame();
             }
         }
-    }, 100); // 100ms = 10 FPS
+    }, 200); // 200ms ~ 5 FPS
 }
 
 function captureAndSendFrame() {
     try {
+        if (!captureCanvas) captureCanvas = document.createElement('canvas');
         // Set canvas size to match video
-        canvasElement.width = clientVideo.videoWidth;
-        canvasElement.height = clientVideo.videoHeight;
-        
-        // Draw current video frame to canvas
-        const ctx = canvasElement.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(clientVideo, 0, 0, canvasElement.width, canvasElement.height);
-        
+        captureCanvas.width = clientVideoEl.videoWidth;
+        captureCanvas.height = clientVideoEl.videoHeight;
+
+        // Draw current video frame to offscreen canvas
+        const ctx = captureCanvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(clientVideoEl, 0, 0, captureCanvas.width, captureCanvas.height);
+
         // Convert canvas to base64 JPEG with lower quality for faster transmission
-        const frameData = canvasElement.toDataURL('image/jpeg', 0.6);
-        
-        // Send frame to server via WebSocket
+        const frameData = captureCanvas.toDataURL('image/jpeg', 0.5);
+
+        // Send frame to server via WebSocket (metadata-only response expected)
         socket.emit('frame', frameData);
     } catch (error) {
         console.error('Error capturing frame:', error);
     }
+}
+
+// Add play button click handler to start detection
+const videoOverlayPlayButton = document.querySelector('#video-overlay i');
+if (videoOverlayPlayButton) {
+    videoOverlayPlayButton.addEventListener('click', async () => {
+        if (!isRunning) {
+            startBtn.click(); // Simulate clicking the Start Detection button
+        }
+    });
 }

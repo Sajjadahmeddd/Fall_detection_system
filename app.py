@@ -181,85 +181,124 @@ def detect_fall(frame, box, confidence):
     
     return detection_data
 
-# Process frame (common function for both server and client camera)
-def process_frame(frame):
-    """Process a single frame and return the annotated frame"""
+def analyze_frame(frame):
+    """Run detection on a frame and return metadata-only results for the frontend to render.
+    Returns a payload with frame size, detections, and stats.
+    """
     global model, classnames
-    
+
     # Resize frame - using smaller size for faster inference
-    frame = cv2.resize(frame, (config.DEFAULT_FRAME_WIDTH, config.DEFAULT_FRAME_HEIGHT))
-    
+    frame_resized = cv2.resize(frame, (config.DEFAULT_FRAME_WIDTH, config.DEFAULT_FRAME_HEIGHT))
+
     # Run detection with optimized parameters
-    results = model(frame, verbose=False, conf=config.CONFIDENCE_THRESHOLD / 100.0, 
-                   iou=0.5, device=DEVICE)
-    
+    results = model(frame_resized, verbose=False, conf=config.CONFIDENCE_THRESHOLD / 100.0,
+                    iou=0.5, device=DEVICE)
+
+    print(f"[DEBUG] Running detection on frame. Model confidence threshold: {config.CONFIDENCE_THRESHOLD}")
+    print(f"[DEBUG] Results from model: {results}")
+
     person_count = 0
     fall_count = 0
-    
+    detections = []
+
     for info in results:
         parameters = info.boxes
         for box in parameters:
-            # Handle both CPU and GPU tensors
             try:
                 confidence = box.conf[0]
-                if hasattr(confidence, 'cpu'):  # GPU tensor
+                if hasattr(confidence, 'cpu'):
                     confidence = confidence.cpu().numpy()
-                else:  # CPU tensor or numpy
+                else:
                     confidence = float(confidence)
-                    
+
+                print(f"[DEBUG] Detection confidence: {confidence}")
+
                 class_detect = box.cls[0]
-                if hasattr(class_detect, 'cpu'):  # GPU tensor
+                if hasattr(class_detect, 'cpu'):
                     class_detect = int(class_detect.cpu().numpy())
-                else:  # CPU tensor or numpy
+                else:
                     class_detect = int(class_detect)
+
+                print(f"[DEBUG] Detected class index: {class_detect}")
             except Exception as e:
-                print(f"Error converting tensors: {e}")
+                print(f"[DEBUG] Error processing detection: {e}")
                 continue
-            
+
             if class_detect < len(classnames):
                 class_name = classnames[class_detect]
                 conf = math.ceil(float(confidence) * 100)
-                
+
                 if conf > config.CONFIDENCE_THRESHOLD and class_name == 'person':
                     person_count += 1
-                    
+
                     # Get detection data
-                    detection = detect_fall(frame, box, confidence)
-                    
+                    detection = detect_fall(frame_resized, box, confidence)
                     if detection is None:
                         continue
-                    
-                    x1, y1, x2, y2 = detection['x1'], detection['y1'], detection['x2'], detection['y2']
-                    width, height = detection['width'], detection['height']
-                    
-                    # Draw bounding box
-                    if detection['is_fallen']:
+
+                    fallen = bool(detection['is_fallen'])
+                    if fallen:
                         fall_count += 1
-                        # Red box for fall
-                        cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 0, 255))
-                        cvzone.putTextRect(frame, 'FALL DETECTED!', [x1, max(y1 - 50, 10)], 
-                                         thickness=3, scale=2, colorR=(0, 0, 255))
-                    else:
-                        # Green box for normal
-                        cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6, colorR=(0, 255, 0))
-                        cvzone.putTextRect(frame, f'{class_name}', [x1 + 8, y1 - 12], 
-                                         thickness=2, scale=2, colorR=(0, 255, 0))
-                    
-                    # Show metrics
-                    cvzone.putTextRect(frame, f'R:{detection["aspect_ratio"]} H:{detection["height_ratio"]}', 
-                                     [x1, y2 + 10], thickness=1, scale=1)
-    
+
+                    detections.append({
+                        'x': detection['x1'],
+                        'y': detection['y1'],
+                        'w': detection['width'],
+                        'h': detection['height'],
+                        'label': class_name,
+                        'conf': conf,
+                        'fallen': fallen,
+                        'aspect_ratio': detection['aspect_ratio'],
+                        'height_ratio': detection['height_ratio']
+                    })
+
+    payload = {
+        'frame_size': {
+            'width': config.DEFAULT_FRAME_WIDTH,
+            'height': config.DEFAULT_FRAME_HEIGHT
+        },
+        'detections': detections,
+        'person_count': person_count,
+        'fall_count': fall_count,
+        'timestamp': datetime.now().strftime("%H:%M:%S")
+    }
+
     # Send stats via WebSocket (non-blocking)
     try:
         socketio.emit('stats_update', {
             'person_count': person_count,
             'fall_count': fall_count,
-            'timestamp': datetime.now().strftime("%H:%M:%S")
-        }, skip_queue=True)
+            'timestamp': payload['timestamp']
+        })
     except:
-        pass  # Skip if no active clients
-    
-    return frame
+        pass
+
+    return payload
+
+# Process and annotate a frame for server-side streaming (unchanged public behavior)
+def process_frame(frame):
+    """Process a single frame and return the annotated frame. Also emits bbox metadata for frontend rendering."""
+    # Analyze first to get metadata
+    analysis = analyze_frame(frame)
+
+    # Draw on a resized frame for server stream consumers
+    frame_out = cv2.resize(frame, (config.DEFAULT_FRAME_WIDTH, config.DEFAULT_FRAME_HEIGHT))
+
+    for det in analysis['detections']:
+        x1, y1, w, h = det['x'], det['y'], det['w'], det['h']
+        color = (0, 0, 255) if det['fallen'] else (0, 255, 0)
+        cvzone.cornerRect(frame_out, [x1, y1, w, h], l=30, rt=6, colorR=color)
+        title = 'FALL DETECTED!' if det['fallen'] else det['label']
+        cvzone.putTextRect(frame_out, title, [x1 + 8, max(y1 - 12, 10)], thickness=2, scale=2, colorR=color)
+        cvzone.putTextRect(frame_out, f"R:{det['aspect_ratio']} H:{det['height_ratio']}", [x1, y1 + h + 10], thickness=1, scale=1)
+
+    # Emit bbox-only payload so frontend can render over its own stream
+    try:
+        socketio.emit('bbox_update', analysis)
+    except:
+        pass
+
+    return frame_out
 
 # Generate video frames (for server camera)
 def generate_frames():
@@ -369,28 +408,28 @@ def handle_disconnect():
 
 @socketio.on('frame')
 def handle_frame(data):
-    """Receive frame from client camera"""
+    """Receive a (sampled) frame from client camera and return only bbox metadata."""
     global latest_frame, use_client_camera
-    
+
     if not use_client_camera or not is_running:
         return
-    
+
     try:
         # Decode base64 image
         img_data = base64.b64decode(data.split(',')[1])
         nparr = np.frombuffer(img_data, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
+
         if frame is not None:
-            # Process the frame
-            processed_frame = process_frame(frame)
-            
-            # Encode processed frame back to base64 with lower quality
-            ret, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-            if ret:
-                processed_b64 = base64.b64encode(buffer).decode('utf-8')
-                # Send processed frame back to client (non-blocking)
-                emit('processed_frame', f'data:image/jpeg;base64,{processed_b64}', skip_queue=True)
+            analysis = analyze_frame(frame)
+            # Send bbox metadata back to client (non-blocking)
+            emit('bbox_update', analysis)
+            # Also send stats update directly to this client to ensure UI updates
+            emit('stats_update', {
+                'person_count': analysis['person_count'],
+                'fall_count': analysis['fall_count'],
+                'timestamp': analysis['timestamp']
+            })
     except Exception as e:
         print(f"Error processing frame: {e}")
 
