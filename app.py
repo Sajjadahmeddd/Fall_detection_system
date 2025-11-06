@@ -453,7 +453,7 @@ if __name__ == '__main__':
     print("✨ Server is running!")
     print("="*60)
     # Read port and host from environment (fallback to 8000)
-    port = int(os.environ.get('PORT', '8000'))
+    port = int(os.environ.get('PORT', '9992'))
     host = os.environ.get('HOST', '0.0.0.0')
 
     print("\n📱 Access the application at:")
