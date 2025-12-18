@@ -4,6 +4,8 @@ const socket = io();
 // DOM Elements
 const startBtn = document.getElementById('start-btn');
 const stopBtn = document.getElementById('stop-btn');
+const detectionMode = document.getElementById('detection-mode');
+const modeHelp = document.getElementById('mode-help');
 const sourceType = document.getElementById('source-type');
 const sourceInput = document.getElementById('source-input');
 const sourceLabel = document.getElementById('source-label');
@@ -23,6 +25,7 @@ const alertTime = document.getElementById('alert-time');
 // State
 let isRunning = false;
 let alertSound = null;
+let currentMode = 'yolo';
 
 // Initialize Particles.js
 particlesJS('particles-js', {
@@ -99,6 +102,7 @@ sourceType.addEventListener('change', () => {
 startBtn.addEventListener('click', async () => {
     const source = sourceInput.value.trim();
     const type = sourceType.value;
+    const mode = detectionMode.value;
     
     if (!source) {
         showNotification('Please enter a valid source', 'error');
@@ -112,22 +116,24 @@ startBtn.addEventListener('click', async () => {
         const response = await fetch('/start_detection', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source, type })
+            body: JSON.stringify({ source, type, mode })
         });
         
         const data = await response.json();
         
         if (data.status === 'success') {
             isRunning = true;
+            currentMode = data.mode || mode;
             videoFeed.src = '/video_feed?' + new Date().getTime();
             videoOverlay.classList.add('hidden');
-            statusBadge.textContent = 'Active';
+            statusBadge.textContent = `Active (${currentMode.toUpperCase()})`;
             statusBadge.classList.remove('badge-inactive');
             statusBadge.classList.add('badge-active');
             startBtn.disabled = true;
             stopBtn.disabled = false;
+            detectionMode.disabled = true;
             startBtn.innerHTML = '<i class="fas fa-play"></i> Start Detection';
-            showNotification('Detection started successfully', 'success');
+            showNotification(data.message || 'Detection started successfully', 'success');
         } else {
             throw new Error(data.message);
         }
@@ -161,6 +167,7 @@ stopBtn.addEventListener('click', async () => {
             statusBadge.classList.add('badge-inactive');
             startBtn.disabled = false;
             stopBtn.disabled = true;
+            detectionMode.disabled = false;
             stopBtn.innerHTML = '<i class="fas fa-stop"></i> Stop Detection';
             personCount.textContent = '0';
             fallCount.textContent = '0';
@@ -201,16 +208,26 @@ acknowledgeBtn.addEventListener('click', () => {
 
 // Socket.IO Event Handlers
 socket.on('connect', () => {
-    console.log('Connected to server');
+    console.log('✅ Socket.IO Connected to server');
+});
+
+socket.on('disconnect', () => {
+    console.log('❌ Socket.IO Disconnected from server');
+});
+
+socket.on('connect_error', (error) => {
+    console.error('❌ Socket.IO Connection Error:', error);
 });
 
 socket.on('stats_update', (data) => {
+    console.log('📊 Stats update:', data);
     personCount.textContent = data.person_count;
     fallCount.textContent = data.fall_count;
 });
 
 socket.on('fall_alert', (alert) => {
-    console.log('Fall alert received:', alert);
+    console.log('🚨 Fall alert received:', alert);
+    console.log('Alert details:', JSON.stringify(alert, null, 2));
     addAlertToList(alert);
     showAlertModal(alert);
     playAlertSound(true);
@@ -223,6 +240,9 @@ function addAlertToList(alert) {
     if (noAlerts) {
         noAlerts.remove();
     }
+    
+    // Handle conditions field (may not exist for pose-based alerts)
+    const conditionsText = alert.conditions ? alert.conditions.join(', ') : (alert.mode || 'N/A');
     
     const alertItem = document.createElement('div');
     alertItem.className = 'alert-item';
@@ -238,7 +258,7 @@ function addAlertToList(alert) {
             ${alert.location}
         </div>
         <div class="alert-item-details">
-            Confidence: ${alert.confidence}% | Conditions: ${alert.conditions.join(', ')}
+            Confidence: ${alert.confidence}% | ${conditionsText}
         </div>
     `;
     
@@ -327,8 +347,41 @@ async function loadAlerts() {
     }
 }
 
+// Check model availability
+async function checkModelAvailability() {
+    try {
+        const response = await fetch('/model_info');
+        const data = await response.json();
+        
+        // Update detection mode dropdown based on availability
+        const poseOption = detectionMode.querySelector('option[value="pose"]');
+        
+        if (!data.pose.available) {
+            poseOption.disabled = true;
+            poseOption.textContent = 'Pose-Based (LSTM) - Not Available';
+            
+            if (detectionMode.value === 'pose') {
+                detectionMode.value = 'yolo';
+            }
+            
+            modeHelp.innerHTML = `
+                YOLO: Fast, bounding box-based detection<br>
+                <span style="color: #ff6b6b;">Pose: Model not loaded. Train model first: python train.py</span>
+            `;
+        } else {
+            modeHelp.innerHTML = `
+                YOLO: Fast, bounding box-based detection<br>
+                Pose: More accurate, skeleton-based LSTM detection (${data.pose.device})
+            `;
+        }
+    } catch (error) {
+        console.error('Error checking model availability:', error);
+    }
+}
+
 // Initialize
 loadAlerts();
+checkModelAvailability();
 
 // Close modal on outside click
 alertModal.addEventListener('click', (e) => {

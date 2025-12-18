@@ -78,6 +78,22 @@
                         <h2>Controls</h2>
                     </div>
                     <div class="panel-content">
+                        <!-- Detection Mode Selection -->
+                        <div class="form-group">
+                            <label for="detection-mode">
+                                <i class="fas fa-brain"></i>
+                                Detection Mode
+                            </label>
+                            <select id="detection-mode" class="form-control">
+                                <option value="yolo">YOLO (Bounding Box)</option>
+                                <option value="pose">Pose-Based (LSTM)</option>
+                            </select>
+                            <small class="form-help" id="mode-help">
+                                YOLO: Fast, bounding box-based detection<br>
+                                Pose: More accurate, skeleton-based detection
+                            </small>
+                        </div>
+
                         <!-- Source Selection -->
                         <div class="form-group">
                             <label for="source-type">

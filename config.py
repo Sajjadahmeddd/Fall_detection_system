@@ -61,8 +61,43 @@ CLASSES_FILE = 'classes.txt'
 RTSP_BUFFER_SIZE = 1
 RTSP_FPS = 25
 
+## Pose-Based Fall Detection Settings (MediaPipe + LSTM)
+# New pose-based detection system configuration
+
+# Pose Extraction
+POSE_MIN_DETECTION_CONFIDENCE = 0.5  # Minimum confidence for pose detection
+POSE_MIN_TRACKING_CONFIDENCE = 0.5  # Minimum confidence for pose tracking
+POSE_MODEL_COMPLEXITY = 1  # 0=Lite, 1=Full, 2=Heavy (more accurate but slower)
+
+# Temporal Model
+POSE_SEQUENCE_LENGTH = 30  # Number of frames in sliding window (e.g., 30 frames = 1 second at 30fps)
+POSE_MODEL_PATH = './checkpoints/best_model.pth'  # Path to trained LSTM/GRU model
+POSE_MODEL_TYPE = 'lstm'  # 'lstm' or 'gru'
+POSE_CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence to trigger fall alert (0.0-1.0)
+POSE_FALL_COOLDOWN = 2.0  # Seconds before detecting another fall
+
+# Model Architecture
+POSE_INPUT_SIZE = 34  # 17 keypoints * 2 coordinates (x, y)
+POSE_HIDDEN_SIZE = 128  # LSTM hidden layer size
+POSE_NUM_LAYERS = 2  # Number of LSTM layers
+POSE_DROPOUT = 0.3  # Dropout rate for regularization
+POSE_BIDIRECTIONAL = True  # Use bidirectional LSTM
+
+# Frame Processing
+POSE_FRAME_WIDTH = 640  # Width for pose extraction
+POSE_FRAME_HEIGHT = 480  # Height for pose extraction
+
+## Detection Mode
+# Choose between 'yolo' (bounding box) or 'pose' (MediaPipe + LSTM)
+DETECTION_MODE = 'pose'  # Options: 'yolo' or 'pose'
+
 ## Notes:
 # - Lower ratio thresholds = more sensitive (detects more falls, may have false positives)
 # - Higher ratio thresholds = less sensitive (misses some falls, fewer false positives)
 # - Increase MIN_CONDITIONS_FOR_FALL for higher confidence (fewer false positives)
 # - Decrease MIN_CONDITIONS_FOR_FALL for higher sensitivity (may have false positives)
+# 
+# Pose-based detection notes:
+# - POSE_CONFIDENCE_THRESHOLD: Higher = fewer false positives, Lower = more sensitive
+# - POSE_SEQUENCE_LENGTH: Longer = more context but slower response
+# - Train the model first using train.py before using pose-based detection
