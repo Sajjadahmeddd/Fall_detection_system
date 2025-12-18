@@ -1,0 +1,16 @@
+# MoveNet Pose-Based Fall Detection Requirements
+# Install with: pip install -r requirements_movenet.txt
+
+# Core ML/CV
+tensorflow>=2.13.0
+tensorflow-hub>=0.14.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Web App
+Flask>=2.3.0
+flask-socketio>=5.3.0
+python-socketio>=5.9.0
+
+# Utilities
+python-dateutil>=2.8.2
