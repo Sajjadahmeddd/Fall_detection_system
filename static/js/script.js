@@ -205,8 +205,10 @@ socket.on('connect', () => {
 });
 
 socket.on('stats_update', (data) => {
-    personCount.textContent = data.person_count;
-    fallCount.textContent = data.fall_count;
+    personCount.textContent = data.person_detected ? '1' : '0';
+    if (data.fall_detected) {
+        fallCount.textContent = parseInt(fallCount.textContent) + 1;
+    }
 });
 
 socket.on('fall_alert', (alert) => {
@@ -238,7 +240,7 @@ function addAlertToList(alert) {
             ${alert.location}
         </div>
         <div class="alert-item-details">
-            Confidence: ${alert.confidence}% | Conditions: ${alert.conditions.join(', ')}
+            Score: ${alert.fall_score}/6 | Angle: ${alert.torso_angle}° | Conditions: ${alert.conditions.join(', ')}
         </div>
     `;
     
@@ -255,7 +257,7 @@ function addAlertToList(alert) {
 // Show Alert Modal
 function showAlertModal(alert) {
     alertMessage.textContent = `A fall has been detected at ${alert.location}`;
-    alertTime.textContent = `Time: ${alert.time_string} | Confidence: ${alert.confidence}%`;
+    alertTime.textContent = `Time: ${alert.time_string} | Score: ${alert.fall_score}/6 | Angle: ${alert.torso_angle}°`;
     alertModal.classList.add('show');
 }
 

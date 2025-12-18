@@ -114,12 +114,17 @@ def generate_frames():
                         color = (0, 0, 255) if is_fallen else (0, 255, 0)
                         cv2.line(frame, shoulder, hip, color, 3)
                     
+                    # Convert numpy types to Python native types for JSON serialization
+                    torso_angle = float(detection_data['torso_angle'])
+                    alignment_score = float(detection_data['alignment_score'])
+                    fall_score = int(detection_data['fall_score'])
+                    
                     # Display metrics
                     y_offset = 30
                     metrics = [
-                        f"Torso Angle: {detection_data['torso_angle']}°",
-                        f"Alignment: {detection_data['alignment_score']:.2f}",
-                        f"Fall Score: {detection_data['fall_score']}/6"
+                        f"Torso Angle: {torso_angle}°",
+                        f"Alignment: {alignment_score:.2f}",
+                        f"Fall Score: {fall_score}/6"
                     ]
                     
                     for i, metric in enumerate(metrics):
@@ -137,12 +142,14 @@ def generate_frames():
                         if not fall_detected_flag or (len(fall_alert_history) > 0 and 
                                                      current_time - fall_alert_history[-1]['timestamp'] > FALL_COOLDOWN):
                             fall_detected_flag = True
+                            
+                            # Convert all numpy types to Python native types for JSON serialization
                             alert = {
-                                'timestamp': current_time,
+                                'timestamp': float(current_time),
                                 'time_string': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 'location': f"Camera: {current_source}",
-                                'torso_angle': detection_data['torso_angle'],
-                                'fall_score': detection_data['fall_score'],
+                                'torso_angle': float(detection_data['torso_angle']),
+                                'fall_score': int(detection_data['fall_score']),
                                 'conditions': detection_data['conditions']
                             }
                             fall_alert_history.append(alert)
@@ -150,16 +157,17 @@ def generate_frames():
                             if len(fall_alert_history) > MAX_ALERT_HISTORY:
                                 fall_alert_history.pop(0)
                             
+                            # Emit alert to frontend
                             socketio.emit('fall_alert', alert)
-                            print(f"🚨 Fall detected! Score: {detection_data['fall_score']}/6")
+                            print(f"🚨 FALL ALERT SENT! Score: {fall_score}/6, Angle: {torso_angle}°")
                     else:
                         fall_detected_flag = False
                     
-                    # Send stats via WebSocket
+                    # Send stats via WebSocket (with Python native types for JSON)
                     socketio.emit('stats_update', {
                         'person_detected': True,
-                        'fall_detected': is_fallen,
-                        'torso_angle': detection_data['torso_angle'],
+                        'fall_detected': bool(is_fallen),
+                        'torso_angle': float(torso_angle),
                         'timestamp': datetime.now().strftime("%H:%M:%S")
                     })
                 else:

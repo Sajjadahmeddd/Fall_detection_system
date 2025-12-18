@@ -211,20 +211,21 @@ class PoseFallDetector:
         # Determine if fallen (need score >= 3 for high confidence)
         is_fallen = fall_score >= 3
         
+        # Convert all numpy types to Python native types for JSON serialization
         detection_data = {
-            'torso_angle': round(torso_angle, 2),
-            'alignment_score': round(alignment_score, 2),
-            'body_height_ratio': round(body_height_ratio, 2),
-            'distance_from_bottom': round(distance_from_bottom, 2),
-            'fall_score': fall_score,
-            'is_fallen': is_fallen,
+            'torso_angle': float(round(torso_angle, 2)),
+            'alignment_score': float(round(alignment_score, 2)),
+            'body_height_ratio': float(round(body_height_ratio, 2)),
+            'distance_from_bottom': float(round(distance_from_bottom, 2)),
+            'fall_score': int(fall_score),
+            'is_fallen': bool(is_fallen),
             'conditions': conditions,
             'keypoints': keypoints,
-            'shoulder_mid': shoulder_mid,
-            'hip_mid': hip_mid
+            'shoulder_mid': [float(shoulder_mid[0]), float(shoulder_mid[1])],
+            'hip_mid': [float(hip_mid[0]), float(hip_mid[1])]
         }
         
-        return is_fallen, detection_data
+        return bool(is_fallen), detection_data
     
     def draw_skeleton(self, frame, keypoints):
         """Draw skeleton on frame"""
