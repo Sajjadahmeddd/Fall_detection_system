@@ -20,6 +20,13 @@ fall_detected_flag = False
 fall_alert_history = []
 current_source = None
 source_type = None
+current_stats = {
+    'people_count': 0,
+    'person_detected': False,
+    'fall_detected': False,
+    'torso_angle': 0,
+    'timestamp': '--:--:--'
+}
 
 # Load configuration from config.py
 MAX_ALERT_HISTORY = config.MAX_ALERT_HISTORY
@@ -163,17 +170,23 @@ def generate_frames():
                     else:
                         fall_detected_flag = False
                     
-                    # Send stats via WebSocket (with Python native types for JSON)
-                    socketio.emit('stats_update', {
-                        'person_detected': True,
-                        'fall_detected': bool(is_fallen),
-                        'torso_angle': float(torso_angle),
-                        'timestamp': datetime.now().strftime("%H:%M:%S")
-                    })
+                    # Update stats (stored globally, emitted by background task)
+                    current_stats['people_count'] = 1
+                    current_stats['person_detected'] = True
+                    current_stats['fall_detected'] = bool(is_fallen)
+                    current_stats['torso_angle'] = float(torso_angle)
+                    current_stats['timestamp'] = datetime.now().strftime("%H:%M:%S")
                 else:
                     # No person detected - show message
                     cv2.putText(frame, "No person detected", (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    
+                    # Update stats with no person detected
+                    current_stats['people_count'] = 0
+                    current_stats['person_detected'] = False
+                    current_stats['fall_detected'] = False
+                    current_stats['torso_angle'] = 0
+                    current_stats['timestamp'] = datetime.now().strftime("%H:%M:%S")
             except Exception as e:
                 print(f"⚠️ Error in detection: {e}")
                 # Continue showing frames even if detection fails
@@ -264,10 +277,21 @@ def status():
 def handle_connect():
     print('Client connected')
     emit('connection_response', {'data': 'Connected to Fall Detection System (MoveNet Pose)'})
+    # Start background task to emit stats
+    socketio.start_background_task(emit_stats_loop)
 
 @socketio.on('disconnect')
 def handle_disconnect():
     print('Client disconnected')
+
+# Background task to emit stats updates
+def emit_stats_loop():
+    """Background task that emits stats updates every 0.5 seconds"""
+    while True:
+        if is_running:
+            socketio.emit('stats_update', current_stats, broadcast=True)
+            print(f"📊 Stats emitted: People={current_stats['people_count']}, Falls={current_stats['fall_detected']}")
+        socketio.sleep(0.5)
 
 @app.route('/health', methods=['GET'])
 def health_check():

@@ -205,8 +205,11 @@ socket.on('connect', () => {
 });
 
 socket.on('stats_update', (data) => {
-    personCount.textContent = data.person_detected ? '1' : '0';
-    if (data.fall_detected) {
+    console.log('Stats update received:', data);
+    if (personCount) {
+        personCount.textContent = data.people_count || 0;
+    }
+    if (data.fall_detected && fallCount) {
         fallCount.textContent = parseInt(fallCount.textContent) + 1;
     }
 });
